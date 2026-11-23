@@ -1,6 +1,6 @@
 # ForgeCache
 
-Phase 5 is an in-memory key-value store with a byte limit, expiration, a lock, and optional recovery from disk. A program stores a copy of a byte slice, reads a copy back, and deletes it. Goroutines may share one cache. When `WithMaxBytes` is set, the least recently used entry is removed to make room. A positive TTL becomes an absolute deadline. `Open` restores a snapshot, then replays the log.
+ForgeCache v1.0 is an in-memory key-value store with a byte limit, expiration, a lock, optional recovery from disk, and counters. A program stores a copy of a byte slice, reads a copy back, and deletes it. Goroutines may share one cache. When `WithMaxBytes` is set, the least recently used entry is removed to make room. A positive TTL becomes an absolute deadline. `Open` restores a snapshot, then replays the log.
 
 ```go
 cache := forgecache.New()
@@ -27,7 +27,15 @@ Keys must be non-empty and at most 1024 bytes. The cache copies values on `Set` 
 
 One mutex covers the map, the recency list, and the byte count. `Get` takes that lock exclusively because a read moves the entry and may delete an expired one.
 
-`Open(dir)` loads `snapshot.bin` when it exists, replays later records from `append.log`, and drops entries that are already expired. `Snapshot` replaces `snapshot.bin` and truncates the log. A trailing partial record is ignored. A bad checksum is an error. `WithDurability(forgecache.DurabilityOS)` skips the flush after each mutation. `Close` and `Snapshot` still flush. The log stores absolute deadlines, not remaining durations. Access order is not restored. See [docs/architecture.md](docs/architecture.md) and [docs/persistence.md](docs/persistence.md).
+`Open(dir)` loads `snapshot.bin` when it exists, replays later records from `append.log`, and drops entries that are already expired. `Snapshot` replaces `snapshot.bin` and truncates the log. A trailing partial record is ignored. A bad checksum is an error. `WithDurability(forgecache.DurabilityOS)` skips the flush after each mutation. `Close` and `Snapshot` still flush. The log stores absolute deadlines, not remaining durations. Access order is not restored.
+
+`Stats` reports hits, misses, hit ratio, evictions, expirations, stored bytes, operations per second, and a p95 and p99 from the latest samples. `GetOrLoad` runs one load function when several goroutines miss the same key. `NewSharded(n)` splits the cache into n locks. Each shard keeps its own recency list, and the byte limit is divided across them.
+
+```
+go test -bench=. -benchmem ./...
+```
+
+The benchmarks compare this cache with an ordinary Go map. They are measurements, not a claim that one is faster. See [docs/architecture.md](docs/architecture.md), [docs/persistence.md](docs/persistence.md), and [docs/performance.md](docs/performance.md).
 
 ## Run
 

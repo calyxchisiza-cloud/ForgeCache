@@ -1,6 +1,6 @@
 # ForgeCache architecture
 
-Phase 5 stores values in a Go map, keeps recency in a doubly linked list written in this package, and drops a value at its deadline. `container/list` is not used. One mutex covers the map and the list. `Open` can restore values from a snapshot and an append-only log.
+ForgeCache v1.0 stores values in a Go map, keeps recency in a doubly linked list written in this package, and drops a value at its deadline. `container/list` is not used. One mutex covers the map and the list unless `NewSharded` splits them. `Open` can restore values from a snapshot and an append-only log.
 
 ## Now
 
@@ -15,11 +15,12 @@ Phase 5 stores values in a Go map, keeps recency in a doubly linked list written
 | Janitor | `Sweep` removes every expired entry. A background pass calls it about once a second unless `WithJanitor` changes the interval. |
 | Lock | One mutex. Every operation, including the janitor, holds it for the whole change. A shared lock would not make `Get` concurrent, because a hit updates the list. |
 | Recovery | `Open` loads the newest snapshot, replays log records with a higher sequence, and skips expired entries. `Set`, `Delete`, `Expire`, and `Clear` append a record. Evictions and reads are not logged. |
+| Stats | Hits and misses count `Get` and `GetOrLoad`. Evictions count capacity removals. Expirations count deadline removals. Operations per second use the wall clock since `New`. p95 and p99 use the latest 256 samples. |
+| Load | `GetOrLoad` calls the load function once while other goroutines wait for that key. |
+| Shards | `NewSharded` gives each shard its own mutex, map, and recency list. The byte limit is split. Eviction stays inside the shard. |
 
 An entry records the value, the time it was stored, the time it was last read, the deadline, and the list links. The deadline is the zero time when the value does not expire.
 
-## Later
-
-- Phase 6: hit and miss counters, benchmarks, and optional lock sharding.
+A distributed cache, consistent hashing, and a network interface are outside this version.
 
 ForgeCache does not replace the database that owns the data. It keeps a copy that is faster to read.

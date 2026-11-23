@@ -248,7 +248,7 @@ func (c *Cache) apply(rec record) {
 	case opSet:
 		if !rec.expires.IsZero() && !now.Before(rec.expires) {
 			if e, ok := c.items[rec.key]; ok {
-				c.remove(e)
+				c.dropExpired(e)
 			}
 			return
 		}

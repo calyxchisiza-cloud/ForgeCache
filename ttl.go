@@ -59,7 +59,7 @@ func (c *Cache) Sweep() int {
 	for e := c.head; e != nil; {
 		next := e.next
 		if c.expired(e, now) {
-			c.remove(e)
+			c.dropExpired(e)
 			n++
 		}
 		e = next

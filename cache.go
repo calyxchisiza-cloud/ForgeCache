@@ -1,8 +1,8 @@
 // Package forgecache is an in-memory key-value store.
-// Phase 5 expires values at an absolute deadline, evicts the least recently
-// used entry when a byte limit is set, lets goroutines share one cache, and
-// can restore values from a snapshot and an append-only log.
+// It expires values, evicts the least recently used entry, lets goroutines
+// share a cache, and can restore values from a snapshot and a log.
 // One mutex covers the map, the recency list, and the byte count together.
+// NewSharded gives each shard its own mutex.
 package forgecache
 
 import (
@@ -36,6 +36,9 @@ var (
 
 	// ErrValueUnloggable means the value is too large to store in one record.
 	ErrValueUnloggable = errors.New("value exceeds the persistence record limit")
+
+	// ErrNilLoad means GetOrLoad was called without a load function.
+	ErrNilLoad = errors.New("load function is nil")
 )
 
 // Clock supplies the instant used for expiration.
@@ -102,6 +105,16 @@ type Cache struct {
 	aof          *os.File
 	seq          uint64
 	syncWrites   bool
+	started      time.Time
+	hits         uint64
+	misses       uint64
+	evictions    uint64
+	expirations  uint64
+	ops          uint64
+	samples      [sampleCap]time.Duration
+	sampleN      int
+	sampleAt     int
+	inflight     map[string]*flight
 }
 
 type entry struct {
@@ -122,6 +135,8 @@ func New(opts ...Option) *Cache {
 		janitorEvery: time.Second,
 		stop:         make(chan struct{}),
 		syncWrites:   true,
+		started:      time.Now(),
+		inflight:     make(map[string]*flight),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -165,8 +180,10 @@ func (c *Cache) Set(key string, value []byte, ttl time.Duration) error {
 	}
 	cloned := cloneBytes(value)
 	size := entrySize(key, cloned)
+	start := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.observe(start)
 	if c.maxBytes > 0 && size > c.maxBytes {
 		return ErrValueTooLarge
 	}
@@ -187,7 +204,7 @@ func (c *Cache) put(key string, cloned []byte, now time.Time, expires time.Time)
 	size := entrySize(key, cloned)
 	if e, ok := c.items[key]; ok {
 		if c.expired(e, now) {
-			c.remove(e)
+			c.dropExpired(e)
 		} else {
 			c.bytes -= entrySize(e.key, e.value)
 			c.unlink(e)
@@ -217,12 +234,16 @@ func (c *Cache) put(key string, cloned []byte, now time.Time, expires time.Time)
 // Get returns a copy of the value stored at key and marks it most recently used.
 // A missing or expired key returns nil, false. An expired entry is removed.
 func (c *Cache) Get(key string) ([]byte, bool) {
+	start := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.observe(start)
 	e, ok := c.live(key)
 	if !ok {
+		c.misses++
 		return nil, false
 	}
+	c.hits++
 	e.accessed = c.now()
 	c.moveToFront(e)
 	return cloneBytes(e.value), true
@@ -232,14 +253,16 @@ func (c *Cache) Get(key string) ([]byte, bool) {
 // It returns false when the key is missing or expired.
 // A log failure leaves the key in place and returns the error.
 func (c *Cache) Delete(key string) (bool, error) {
+	start := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.observe(start)
 	e, ok := c.items[key]
 	if !ok {
 		return false, nil
 	}
 	if c.expired(e, c.now()) {
-		c.remove(e)
+		c.dropExpired(e)
 		return false, nil
 	}
 	if err := c.appendRecord(opDelete, key, nil, time.Time{}); err != nil {
@@ -296,7 +319,7 @@ func (c *Cache) live(key string) (*entry, bool) {
 		return nil, false
 	}
 	if c.expired(e, c.now()) {
-		c.remove(e)
+		c.dropExpired(e)
 		return nil, false
 	}
 	return e, true
@@ -317,6 +340,12 @@ func (c *Cache) evictLRU() {
 		return
 	}
 	c.remove(e)
+	c.evictions++
+}
+
+func (c *Cache) dropExpired(e *entry) {
+	c.remove(e)
+	c.expirations++
 }
 
 func (c *Cache) remove(e *entry) {
