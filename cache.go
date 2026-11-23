@@ -1,11 +1,13 @@
 // Package forgecache is an in-memory key-value store.
-// Phase 4 expires values at an absolute deadline, evicts the least recently
-// used entry when a byte limit is set, and lets goroutines share one cache.
+// Phase 5 expires values at an absolute deadline, evicts the least recently
+// used entry when a byte limit is set, lets goroutines share one cache, and
+// can restore values from a snapshot and an append-only log.
 // One mutex covers the map, the recency list, and the byte count together.
 package forgecache
 
 import (
 	"errors"
+	"os"
 	"sync"
 	"time"
 )
@@ -25,6 +27,15 @@ var (
 
 	// ErrValueTooLarge means this entry alone exceeds the byte limit.
 	ErrValueTooLarge = errors.New("entry exceeds cache capacity")
+
+	// ErrNoPersistence means Snapshot was called on a memory-only cache.
+	ErrNoPersistence = errors.New("cache is not opened on a directory")
+
+	// ErrCorruptLog means a complete record failed its checksum.
+	ErrCorruptLog = errors.New("cache log is corrupt")
+
+	// ErrValueUnloggable means the value is too large to store in one record.
+	ErrValueUnloggable = errors.New("value exceeds the persistence record limit")
 )
 
 // Clock supplies the instant used for expiration.
@@ -87,6 +98,10 @@ type Cache struct {
 	janitorEvery time.Duration
 	stop         chan struct{}
 	closeOnce    sync.Once
+	dir          string
+	aof          *os.File
+	seq          uint64
+	syncWrites   bool
 }
 
 type entry struct {
@@ -106,6 +121,7 @@ func New(opts ...Option) *Cache {
 		items:        make(map[string]*entry),
 		janitorEvery: time.Second,
 		stop:         make(chan struct{}),
+		syncWrites:   true,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -116,11 +132,18 @@ func New(opts ...Option) *Cache {
 	return c
 }
 
-// Close stops the background expiration pass.
-// Stored values remain readable.
+// Close stops the background expiration pass and closes the log file.
+// Stored values remain readable. Later mutations stay in memory only.
 func (c *Cache) Close() {
 	c.closeOnce.Do(func() {
 		close(c.stop)
+		c.mu.Lock()
+		if c.aof != nil {
+			_ = c.aof.Sync()
+			_ = c.aof.Close()
+			c.aof = nil
+		}
+		c.mu.Unlock()
 	})
 }
 
@@ -152,6 +175,16 @@ func (c *Cache) Set(key string, value []byte, ttl time.Duration) error {
 	if ttl > 0 {
 		expires = now.Add(ttl)
 	}
+	if err := c.appendRecord(opSet, key, cloned, expires); err != nil {
+		return err
+	}
+	c.put(key, cloned, now, expires)
+	return nil
+}
+
+// put stores a value that has already been logged. The caller holds c.mu.
+func (c *Cache) put(key string, cloned []byte, now time.Time, expires time.Time) {
+	size := entrySize(key, cloned)
 	if e, ok := c.items[key]; ok {
 		if c.expired(e, now) {
 			c.remove(e)
@@ -165,7 +198,7 @@ func (c *Cache) Set(key string, value []byte, ttl time.Duration) error {
 			e.expires = expires
 			c.pushFront(e)
 			c.bytes += size
-			return nil
+			return
 		}
 	}
 	c.evictFor(size)
@@ -179,7 +212,6 @@ func (c *Cache) Set(key string, value []byte, ttl time.Duration) error {
 	c.items[key] = e
 	c.pushFront(e)
 	c.bytes += size
-	return nil
 }
 
 // Get returns a copy of the value stored at key and marks it most recently used.
@@ -196,17 +228,39 @@ func (c *Cache) Get(key string) ([]byte, bool) {
 	return cloneBytes(e.value), true
 }
 
-// Delete removes key. It returns false when the key is missing or expired.
-func (c *Cache) Delete(key string) bool {
+// Delete removes key.
+// It returns false when the key is missing or expired.
+// A log failure leaves the key in place and returns the error.
+func (c *Cache) Delete(key string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.items[key]
 	if !ok {
-		return false
+		return false, nil
 	}
-	alive := !c.expired(e, c.now())
+	if c.expired(e, c.now()) {
+		c.remove(e)
+		return false, nil
+	}
+	if err := c.appendRecord(opDelete, key, nil, time.Time{}); err != nil {
+		return false, err
+	}
 	c.remove(e)
-	return alive
+	return true, nil
+}
+
+// Clear removes every entry.
+func (c *Cache) Clear() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.appendRecord(opClear, "", nil, time.Time{}); err != nil {
+		return err
+	}
+	c.items = make(map[string]*entry)
+	c.head = nil
+	c.tail = nil
+	c.bytes = 0
+	return nil
 }
 
 // Len returns the number of stored entries, including ones not yet swept.

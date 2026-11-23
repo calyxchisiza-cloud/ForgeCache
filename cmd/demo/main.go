@@ -17,7 +17,8 @@ func main() {
 		log.Fatal("name was not stored")
 	}
 	fmt.Println(string(value))
-	if !cache.Delete("name") {
+	deleted, err := cache.Delete("name")
+	if err != nil || !deleted {
 		log.Fatal("name was not deleted")
 	}
 	if _, found = cache.Get("name"); found {

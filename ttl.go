@@ -23,11 +23,14 @@ func (c *Cache) Expire(key string, ttl time.Duration) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	if ttl == 0 {
-		e.expires = time.Time{}
-	} else {
-		e.expires = c.now().Add(ttl)
+	var expires time.Time
+	if ttl > 0 {
+		expires = c.now().Add(ttl)
 	}
+	if err := c.appendRecord(opSet, e.key, e.value, expires); err != nil {
+		return false, err
+	}
+	e.expires = expires
 	return true, nil
 }
 

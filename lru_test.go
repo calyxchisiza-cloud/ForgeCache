@@ -103,8 +103,9 @@ func TestDeleteFreesCapacity(t *testing.T) {
 	if err := c.Set("B", []byte("b"), 0); err != nil {
 		t.Fatal(err)
 	}
-	if !c.Delete("A") {
-		t.Fatal("delete missed A")
+	deleted, err := c.Delete("A")
+	if err != nil || !deleted {
+		t.Fatalf("delete found %v err %v", deleted, err)
 	}
 	if err := c.Set("C", []byte("c"), 0); err != nil {
 		t.Fatal(err)

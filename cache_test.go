@@ -26,14 +26,16 @@ func TestSetGetUpdateAndDelete(t *testing.T) {
 	if !found || string(got) != "Ada" {
 		t.Fatalf("updated got %q found %v", got, found)
 	}
-	if !c.Delete("name") {
-		t.Fatal("delete did not find the key")
+	deleted, err := c.Delete("name")
+	if err != nil || !deleted {
+		t.Fatalf("delete found %v err %v", deleted, err)
 	}
 	if _, found := c.Get("name"); found {
 		t.Fatal("deleted key was found")
 	}
-	if c.Delete("name") {
-		t.Fatal("second delete reported a hit")
+	deleted, err = c.Delete("name")
+	if err != nil || deleted {
+		t.Fatalf("second delete found %v err %v", deleted, err)
 	}
 }
 

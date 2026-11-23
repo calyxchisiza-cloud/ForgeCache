@@ -25,7 +25,7 @@ func TestConcurrentOperationsKeepTheListIntact(t *testing.T) {
 				case 1:
 					c.Get(key)
 				case 2:
-					c.Delete(key)
+					_, _ = c.Delete(key)
 				case 3:
 					_, _ = c.Expire(key, time.Millisecond)
 				case 4:
@@ -70,7 +70,7 @@ func TestConcurrentUpdateOfOneKey(t *testing.T) {
 				}
 				c.Get("one")
 				if i%5 == 0 {
-					c.Delete("one")
+					_, _ = c.Delete("one")
 				}
 			}
 		}(id)
