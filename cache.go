@@ -1,8 +1,7 @@
 // Package forgecache is an in-memory key-value store.
-// Phase 3 expires values at an absolute deadline and evicts the least
-// recently used entry when a byte limit is set.
-// Callers are not yet allowed to share a cache across goroutines.
-// The janitor goroutine is the only concurrent caller, and it uses the lock.
+// Phase 4 expires values at an absolute deadline, evicts the least recently
+// used entry when a byte limit is set, and lets goroutines share one cache.
+// One mutex covers the map, the recency list, and the byte count together.
 package forgecache
 
 import (
@@ -72,6 +71,11 @@ func WithJanitor(interval time.Duration) Option {
 }
 
 // Cache stores values by key. The most recently used entry is at the head.
+//
+// Every method takes mu for the whole operation. Get cannot use a shared lock:
+// it moves the entry and may delete an expired one. That keeps the map and the
+// list in agreement, and it also means every caller waits on this one lock.
+// Splitting the lock waits until a benchmark shows that wait is the limit.
 type Cache struct {
 	mu           sync.Mutex
 	items        map[string]*entry
