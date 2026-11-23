@@ -93,11 +93,15 @@ func TestKeyAndTTLValidation(t *testing.T) {
 	if err := c.Set("name", []byte("x"), -time.Second); !errors.Is(err, ErrNegativeTTL) {
 		t.Fatalf("negative ttl error %v", err)
 	}
-	if err := c.Set("name", []byte("x"), time.Minute); !errors.Is(err, ErrTTLUnsupported) {
-		t.Fatalf("positive ttl error %v", err)
-	}
 	if _, found := c.Get("name"); found {
-		t.Fatal("rejected ttl stored a value")
+		t.Fatal("negative ttl stored a value")
+	}
+	if err := c.Set("name", []byte("x"), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	got, found := c.Get("name")
+	if !found || string(got) != "x" {
+		t.Fatalf("positive ttl got %q found %v", got, found)
 	}
 }
 
